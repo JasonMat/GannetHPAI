@@ -11,35 +11,63 @@ This is the JAGS code for the current version of the model. It takes several day
 
 # Software 
 R version 4.4.3 (2025-02-28 ucrt) -- "Trophy Case"
+
 JAGS 4.3. 2. 
 
 R Libraries required for Markdown document:
 library(boot)
+
 library(coda)
+
 library(runjags)
+
 library(maps)
+
 library(rlang)
+
 library(maps)
+
 library(ggplot2)
+
 library(runjags)
+
 library(coda)
+
 library(stringr)
+
 library(terra)
+
 library(ggplot2)
+
 library(rnaturalearth)
+
 library(kableExtra)
+
 library(png)
+
 library(tidyr)
+
 library(tidyterra)
+
 library(grid)
+
 library(scales)
+
 library(patchwork)
+
 library(ggimage)
+
 library(ggspatial)
+
 library(RCurl)
+
 library(sf)
 
+
 R Libraries required for JAGS modelling
+
 library(runjags)
+
 library(coda)
+
 library(stringr)
