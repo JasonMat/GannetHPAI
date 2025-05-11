@@ -1,0 +1,1062 @@
+---
+title: "Multispecies HPAI spillovers led to the death of one-in-three breeding gannets"
+affils:
+- address: University of Glasgow
+  code: a
+date: '`r Sys.Date()`'
+output:
+  bookdown::pdf_document2:
+    toc: false
+  html_document:
+    df_print: paged
+  pdf_document:
+    toc: false
+  word_document: default
+  number_sections: true
+biblio-style: apsr
+fontsize: 11pt
+geometry: left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm
+header-includes:
+- \usepackage{setspace} 
+- \usepackage{amsmath}
+keywords: avian influenza, integrated analysis, multi-species contagion, state-space model 
+linestretch: 2
+always_allow_html: true
+bibliography: 
+- 'AISpread.bib'
+link-citations: yes
+---
+
+
+*Jason Matthiopoulos*$^{1*}$, *Stephen Votier*$^2$, *Sarah Wanless*$^3$, *Emma Cunningham*$^4$, *Jude V. Lane*$^5$ and *Jana W.E. Jeglinski*$^{1,6}$
+  
+* Corresponding author
+
+*$^1$ School of Biodiversity One Health and Veterinary Medicine, University of Glasgow, UK*
+
+*$^2$ Lyell Centre, Heriot Watt University, Edinburgh, UK*
+
+*$^3$ UK Centre for Ecology & Hydrology, Bush Estate, Penicuik, UK*
+
+*$^4$ School of Biological Sciences, Ashworth Labs, University of Edinburgh, Edinburgh, UK*
+
+*$^5$ RSPB Centre for Conservation Science, Sandy, Bedfordshire, UK*
+
+*$^6$ Department of Ecoscience, University of Aarhus, Roskilde, Denmark*
+
+\pagebreak 
+
+## Abstract
+Emerging wildlife diseases, such as the recent global outbreak of Highly Pathogenic Avian Influenza, can devastate animal populations, yet identifying transmission pathways and true levels of mortality remains a formidable challenge. We leveraged European carcass counts from the severely impacted Northern Gannet, to which we fit a Bayesian, metapopulation Susceptible-Infected-Recovered-Deceased model, hence uncovering key epidemiological parameters, transmission routes, and overall mortality across the species’ 43-colony metapopulation. Within-colony transmission patterns were consistent with fixed spatial structuring of nests. Between-colony spread was predominantly distance-dependent, in-line with intra-specific transmission, though large-scale outbreak initiation was best explained by inter-specific vectors. We estimate that these multiscale/multispecies dynamics culminated in 33% continental mortality (95% CI: 27–39%) across the Gannet metapopulation. Our approach not only disentangles inter- and intra-specific transmission processes, but offers a scalable tool for real-time assessment of disease spread in wildlife, helping to control threats to biodiversity, agriculture, and public health.
+
+## Keywords
+*Epidemiological connectivity, H5N1 clade 2.3.4.4b HPAIV, One Health, Integrated State-space model, Latent processes, Morus bassanus*
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(boot)
+library(coda)
+library(runjags)
+library(maps)
+library(rlang)
+library(maps)
+library(ggplot2)
+library(runjags)
+library(coda)
+library(stringr)
+library(terra)
+library(ggplot2)
+library(rnaturalearth)
+library(kableExtra)
+library(png)
+library(tidyr)
+library(tidyterra)
+library(grid)
+library(scales)
+library(patchwork)
+library(ggimage)
+library(ggspatial)
+library(RCurl)
+library(sf)
+
+
+```
+
+
+```{r prep, cache=TRUE, include=FALSE}
+
+#### Load JAGS Results
+load("Output/AISpread14_2.rda")
+# Import of real network data (coordinates and size)
+colSummaries<-read.csv("Data/Gannet_colonies_overview.csv")
+di<-as.matrix(read.csv("Data/Gannet_colony_distances.csv"))
+n<-nrow(di) # Number of colonies
+# Colony sizes
+P0<-as.numeric(round(read.csv("Data/Gannet_posterior_colony_sizes.csv", header=FALSE)))
+Access<-t(as.matrix(read.csv("Data/Gannet_colony_accessibility.csv")))
+Carcass<-t(as.matrix(read.csv("Data/Gannet_carcass_zeros.csv")))
+Carcass<-Carcass[,10:53]/2
+
+dats<-c("28-Mar", "4-Apr", "11-Apr", "18-Apr", "25-Apr", "2-May", "9-May", "16-May", "23-May", "30-May", "6-Jun", "13-Jun", "20-Jun", "27-Jun", "4-Jul", "11-Jul", "18-Jul", "25-Jul", "1-Aug", "8-Aug", "15-Aug", "22-Aug", "29-Aug", "5-Sep", "12-Sep", "19-Sep", "26-Sep", "3-Oct", "10-Oct", "17-Oct", "24-Oct", "31-Oct", "7-Nov", "14-Nov", "21-Nov", "28-Nov", "5-Dec", "12-Dec", "19-Dec", "26-Dec", "2-Jan", "9-Jan", "16-Jan")
+
+
+su<-summary(results)
+
+Car<-Carcass
+Car[is.na(Car)]<-0
+totCar<-colSums(Car)
+E<-(is.na(Carcass)==0)*1
+
+
+coder<-mcmc(results)
+
+nms<-rownames(su)
+Tmax<-ncol(Carcass)
+kp<-su[str_detect(nms,"Infected"),]
+PopOutcome<-c(su[str_detect(nms,"EndInfc"),2], su[str_detect(nms,"EndRecv"),2], su[str_detect(nms,"EndDed"),2], su[str_detect(nms,"EndSsc"),2])
+
+# Coda data
+mons<-unique(c(which(str_detect(nms, "c0")),
+              which(str_detect(nms, "c1")),
+              which(str_detect(nms, "aH")),
+              which(str_detect(nms, "deltaH")),
+              which(str_detect(nms, "aG")),
+              which(str_detect(nms, "deltaG")),
+              which(str_detect(nms, "aiM")),
+              which(str_detect(nms, "rrr")),
+              which(str_detect(nms, "esc"))))
+
+cd<-as.data.frame((coder[[1]][[1]])[,mons])
+for(i in 2:4)
+  {
+  cd<-rbind(cd,as.data.frame((coder[[1]][[i]])[,mons]))
+}
+
+
+land <- ne_download(scale = 10, type = 'land', category = "physical",returnclass = "sf")
+```
+
+\pagebreak 
+
+# INTRODUCTION
+
+High pathogenicity avian influenza (HPAI) is of major concern for food security, livestock, wildlife and human health, representing a quintessential One-Health problem [@Kuiken2024; @Sacristan2024]. Wild populations act as a reservoir of HPAI [@Runstadler2024b] with both zoonotic potential and conservation impact [@Lambertucci2025]. Their movements and migration also play a key role in the dissemination of HPAI across different environments at both a local and global scale [@Russell2016; @Yang2024]. Understanding transmission and virulence in such wildlife epizootics is vitally important, for two reasons: First, many affected animal populations are already vulnerable or in-decline due to multiple anthropogenic pressures such as habitat loss and direct mortality [@Dias2019; @Gremillet2009; @Runstadler2024] and additional catastrophic events of mass mortality and breeding failure brought about by disease precipitates declines that may be impossible to mitigate via conventional conservation measures. Second, the high mobility of many free-ranging or migratory animals makes them a major source of spillovers and multi-locus global transmission of disease into livestock, or humans [@Olsen2006; @Kuiken2016; @Erdelyan2024]. Yet, our understanding of HPAI dynamics in wild systems remains limited. 
+
+The recent, rapid emergence of HPAI H5N1 subtype clade 2.3.4.4b in several novel taxa [@Erdelyan2024; @Puryear2024] prompted questions about the detailed mechanisms of contact and contagion within and between species. Despite extensive reports [@EFSA2023; @NatureScot2023; @Lane2024; @Roberts2023; @McPhail2025], highlighting high breeding failure and adult mortality, thus far we lack a comprehensive quantification of the extent and variability of the impact across the range of different species and we have gained only limited understanding of the spatiotemporal patterns of spread across avian communities. Developing quick-response systems for protecting declining species as well as the health of food supply chains and human populations requires a fuller understanding of transmission mechanisms at all the relevant spatial scales. 
+
+To assess whether a disease can be sustained in a single-species system, we must quantify parameters of known epidemiological importance such as rates of infection, mortality, recovery and the basic reproductive number (R0 a hard-to-estimate parameter that provides valuable information on disease contagiousness). However, despite their importance for rapid risk assessment, such empirical parameters are not sufficient for large-scale prediction. Any kind of spatial structuring, whether at fine or coarse scales, can modify the rate of transmission regionally and propagate small-scale stochastic events to whole-system heterogeneities in outbreaks. If the spread of a disease is spatio-temporally predictable at any spatial scale or time horizon, we can potentially exploit this fact towards early-warning systems that can direct interventions locally and preemptively [@Lambertucci2025]. Having accounted for epidemiological patterns in any one focal species, it is then important to know how an outbreak unfolds across the broader, multispecies community, including species for which there may be limited or no observations.
+
+Bottom-up approaches, using histology and viral genomics [@Yang2024; @Erdelyan2024] or long-range animal movements [@Gremillet2023; @Jeglinski2024; @Riaz2024; @Careen2024] are the scientific gold standard for a deep understanding of disease routes and dynamics, however our attempts at building insights from first principles can be overwhelmed by the multitude of different mechanisms that need to be investigated and interlinked [see attempt in @McPhail2025]. Alternatively, a top-down approach may infer connectivity and epidemiology from large-scale observations of the disease, such as its prevalence and local outbreak timing within a spatially structured, large-scale context. Admittedly, understanding an emerging epizootic from incidence or prevalence data is particularly challenging in wildlife because few wildlife systems have established monitoring or surveillance networks, and diseases in the wild are rarely amenable to direct observation and intervention. Possible transmission pathways may be intraspecific via large-scale movements among sub-populations or inter-specific interactions such as scavenging or other mixed species close-contact interactions. In contrast to farmed livestock populations, many wildlife habitats are expansive and inaccessible to direct or even remote observation, and typical blood testing and symptomatic approaches are simply not feasible with high enough frequency, replication and continental scales.
+
+Patchy surveillance networks and observation effort heterogeneities have a distortive effect on the true spatiotemporal patterns of spread. Variations in the symptomatic appearance and mortality across species [@Greco2025] also mean that mortalities reported for most gravely affected species are not necessarily indicative of the burden in reservoir species. Hence, currently, field studies are inconclusive about the existence of robust spatiotemporal patterns in viral spread. Some studies [@Andrew2024] have not found spatial clustering, even with the benefits of sequencing analyses, whereas others [@McPhail2025] have been able to describe consistent spatial drifts in prevalence. Yet, the fragmentary and highly stochastic reporting of cases should not prevent us from seeking underlying patterns and structure in incidence/prevalence data. It is only through capturing such patterns, that we can begin the process of prediction, and ultimately, prevention.
+ 
+In this paper, we demonstrate the utility of using data from a single sentinel species, the Northern Gannet (*Morus bassanus*) to model infection dynamics. Gannets were one of the most severely affected seabird species during an outbreak of HPAI H5N1 in 2022 and were impacted across their global distribution [@Lane2024]. By using opportunistic carcass count data from all Northeast Atlantic Gannet colonies we compartmentalise disease transmission dynamics into three important components: **1. Intra-colony transmission** quantifying basic epidemiological parameters (such as R0) to quantify contagiousness and detect evidence for fine-scale structuring in transmission from the moment the disease took a foothold within each colony. **2. Inter-colony transmission** using metapopulation connectivity to infer the rate of exchange of infections between colonies at different distances. **3. Extra-network transmission** employing the metapopulation as as a sentinel network, effectively, a system of observation nodes, from which we triangulated the broader distribution and temporal fluctuations of the disease collectively across other affected bird classes and species.
+
+Crucially, these epidemiological processes are non-independent. Therefore, intra-colony, inter-colony and community transmission must be quantified in-tandem, despite the obscuring effects of observation biases and spatio-temporal heterogeneities. We develop a modelling framework that adresses these challenges and demonstrates how rapid-response modelling predictions can be generated in real time, with expansive and imperfect field observations. Such approaches are vital for quantifying past and forecasting future impacts of HPAI and other wildlife diseases in a mechanistic fashion, and are genuine examples of One Health, where species conservation receives equal attention to the risk of spillover to humans.
+
+
+
+# RESULTS AND DISCUSSION
+We developed a novel modelling framework and applied it to the collection of opportunistic carcass counts across the Northeast Atlantic breeding range of the Gannet. Gannets breed in 43 high-density colonies (~2 pairs per $m^2$) where hundreds, thousands or tens of thousands of pairs interact closely and forage at sea to provision their young where they may encounter foraging conspecifics from other colonies. Gannets routinely cover hundreds of km, and are liable to expand their ranges when infected [@Jeglinski2024; @Careen2024]. It  is not uncommon for Gannets to breed in close proximity with other seabirds, engaged in activities such as nest defense, defecation, regurgitation or scavenging, all of which may be routes for disease transmission.
+
+Our approach was based on a network-structured Susceptible-Infected-Recovered-Deceased (SIRD) model equipped with an empirical connectivity function the quantified the exchange of infections between the 43 extant Gannet colonies. The model also contained a spatial synchrony term allowing it to detect and quantify residual patterns of infection external to the Gannet colony network. Using Bayesian state-space modelling techniques we fitted this model to 44 weeks of partial records of occurrence and incidence of the disease as represented by carcass counts across the Nortwest coast of Europe (colonies from northern France to Iceland and Lapland). This allowed us to fully reconstruct the unfolding of the outbreak across the Northeast Atlantic (extra-network transmission), but also the fine-scale contagion (intra-colony transmission), and to estimate the effective epidemiological connectivity within the network (inter-colony transmission).
+
+## Intra-colony transmission
+
+The within-colony part of the model estimated four key epidemiological parameters pertaining to rates of transmission ($c_0$ and $R_0$), mortality ($m$), recovery ($r$) and contact mixing ($c_1$). We interpret the epidemiological implications of these results in the light of past evidence and the prior distributions embedded in the model for each of those parameters (see also prior-posterior plots in Fig. \@ref(fig:PriorPost)).
+
+```{r epiParams, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+
+# Summaries of epidemiological parameters
+su_c0<-su[str_detect(nms,"c0"),]
+su_c1<-su[str_detect(nms,"c1"),]
+su_aiM<-su[str_detect(nms,"aiM"),]
+su_rrr<-su[str_detect(nms,"rrr"),]
+su_esc<-su[str_detect(nms,"esc"),]
+
+# R0 and recovery prior samples
+pr_rrr<-0.1+0.8*rbeta(10000,10,10)
+pr_c0<-(1+rgamma(10000,5,5))*pr_rrr
+
+# Calculation of average probability of recovery
+P0<-1000
+RF<-0
+MF<-0
+for(t in 1:20)
+{
+  dm<-P0*su_aiM[2]
+  MF<-MF+dm
+  P0<-P0-dm
+  dr<-P0*su_rrr[2]
+  RF<-RF+dr
+  P0<-P0-dr
+}
+prop_recov<-round(RF/10)
+
+
+```
+
+ Individuals that contracted the disease, died with a weekly probability $m$=`r round(su_aiM[2],2)` (95%CI: `r round(su_aiM[1],2)`-`r round(su_aiM[3],2)` - Fig. \@ref(fig:PriorPost)g). The survivors recovered with a weekly probability $r$=`r round(su_rrr[2],2)` (95%CI: `r round(su_rrr[1],2)`-`r round(su_rrr[3],2)` Fig. \@ref(fig:PriorPost)h). The baseline transmission rate $c_0$=`r round(su_c0[2],2)` (95%CI: `r round(su_c0[1],2)`-`r round(su_c0[3],2)`, Fig. \@ref(fig:PriorPost)a), was higher than the parameter's prior, which was centred at `r round(median(pr_c0),2)` (prior 95% CI: `r round(quantile(pr_c0, 0.025),2)`-`r round(quantile(pr_c0, 0.975),2)`). Using these median values, and iterating over several weeks, we calculate that, of a cohort of infected individuals, only `r prop_recov`% would be expected to survive.
+
+```{r calc_R0, cache=TRUE, include=FALSE}
+R0<-cd$c0/(cd$aiM*cd$rrr)
+suR0<-quantile(R0, probs=c(0.025,0.5,0.975))
+
+```
+
+Our estimate of the basic reproduction number for HPAI in Gannets, $R_0=$ `r round(suR0[2],2)` (95% CI: `r round(suR0[1],2)` - `r round(suR0[3],2)`) is higher than the cross-species median of 1.9-2.3 reported in the literature for within-flock transmission [@Ward2009; @Kirkeby2022]. $R_0$, the number of new cases generated by a single incoming case to an uninfected population is used in epidemiology as a measure of the initial force of infection, and hence its chances of leading to full outbreaks. The inferred high value of $R_0$ here may explain the rapid and consistent propagation of the disease through individual colonies.
+
+The model's contact mixing parameter ($c_1$) detects and quantifies deviations from perfect mixing. Values $c_1>1$ approximate local contact clustering within an otherwise mixed population, represented as a saturating response to the transmission process as the outbreak progresses. In our model, the parameter was estimated as part of inference, therefore testing the hypothesis that within-colony contagion was heterogeneous. We found that the posterior for the contact mixing parameter was very clearly greater than 1 (median $c_1$= `r round(su_c1[2],2)`, 95% CI: `r round(su_c1[1],2)`-`r round(su_c1[3],2)`, Fig. \@ref(fig:PriorPost)b), providing strong evidence of deviations from epidemiological perfect mixing. This suggests that the transmission process within each colony was disproportionately fast at the start of the local outbreak, compared to its continuation, a pattern observed in poultry [@Ward2009; @Kim2021] but thus far only hypothesised for wild birds [@Haman2024]. Within the broader epidemiological literature [@Gomes2023], such asymmetries are likely to be caused by heterogeneities in the behaviour or immune resistance of animals, or in their spatial arrangement. For instance, our finding might point to the existence of early-phase superspreaders who present more-than-average mobility (e.g., pre-breeders or non-breeders unconstrained by nest-site fidelity) and are therefore likely to contract the disease early, spread it wide, but also likely to die out early. The asymmetry might also be the result of fine-scale spatial or topographical structuring in the colony. For instance, early infected residents may quickly pass the disease to their neighbours in topographically similar terrain (e.g., horizontal plains) but transmission may slow down as topographical heterogeneity reduces direct contact between neighbouring nests (e.g., on vertical cliffs) or after first deaths have thinned the density on the breeding colony. This may go some way towards explaining the diverse epidemiological outcomes estimated for different colonies via our approach. 
+
+The key detectability parameter of the observation model (Fig. \@ref(fig:PriorPost)i) indicated that of all the deaths, only `r round(su_esc[2],2)*100`% generated carcasses that were available to be detected by observers (95% CI: `r round(su_esc[1],3)*100`-`r round(su_esc[3],3)*100`%). This low level of carcass detection by visiting observers is compounded by the fact that not all colonies were visited during the outbreak and, that observed colonies were not visited every week.
+ 
+Studies on co-occurring seabird species have shown broad differences in exposure, mortality and symptomatic presentation [@Greco2025], so estimates of the epidemiological and observational parameters from our Gannet findings cannot readily be generalised to other species. However, by accessing core epidemiology via opportunistic bottom-down data we have provided a framework for future similar analyses on other focal species, or multispecies assemblages.
+
+
+```{r SynCon, echo=FALSE, fig.cap="A comparison of the spatial scales of the connectivity and synchrony mechanisms. The connectivity mechanism accounts for new infections occurring as a result of interactions between Gannet colonies, whereas the synchrony mechanism quantifies incursions that are likely coming from outside the breeding network of Gannets. The effective radii of each mechanism are defined as the half saturation points of each median curve. The shaded areas correspond to the 95% credible intervals. The interpretation of the y-axis (here, named relative linkage) is different for the two curves. For connectivity, it represents the effective presence, in a given focal colony, of an individual breeding at another colony. The maximum of 1 applies to an infected individual that breeds at the focal colony (hence, intercolony distance of zero). For synchrony, the y-axis represents the level of autocorrelation in the residual patterns of transmission. A colony is perfectly autocorrelated with its own dynamics, hence the value 1, at distance zero.", fig.height=7,fig.width=5,cache=TRUE}
+
+
+su_dG<-su[str_detect(nms,"deltaG"),]
+su_dH<-su[str_detect(nms,"deltaH"),]
+dists<-seq(0,max(di)/20,1000)
+
+plot(dists/1000,exp(-su_dG[2]*dists), type="l", ylim=c(0,1), xlab="Distance (km)", ylab="Relative linkage", las=1, bty='n')
+polygon(c(dists/1000,rev(dists/1000)),c(exp(-su_dG[1]*dists),rev(exp(-su_dG[3]*dists))), border=NA, col=rgb(0, 0, 0.6,0.2))
+lines(dists/1000,exp(-su_dG[2]*dists), lwd=3, col=rgb(0, 0, 0.6,0.9))
+polygon(c(dists/1000,rev(dists/1000)),c(exp(-su_dH[1]*dists),rev(exp(-su_dH[3]*dists))), border=NA, col=rgb(0, 0.6, 0,0.2))
+lines(dists/1000,exp(-su_dH[2]*dists), lwd=3, col=rgb(0, 0.6, 0,0.9))
+legend(50, 0.95, bty="n",border="white", fill=c(rgb(0, 0, 0.6,0.9), rgb(0, 0.6, 0,0.9)),legend=c("Gannets (Connectivity)", "Multispecies (Synchrony)"), cex=1.2)
+
+lines(0.001*c(log(0.5)/(-su_dG[2]),log(0.5)/(-su_dG[2])),c(0,0.5), lty=2, lwd=2, col=rgb(0, 0, 0.6,0.5))
+
+lines(0.001*c(log(0.5)/(-su_dH[2]),log(0.5)/(-su_dH[2])),c(0,0.5), lty=2, lwd=2, col=rgb(0, 0.6, 0,0.5))
+
+Gannet<-readPNG("Images/Gannet.png")
+rasterImage(Gannet,20,0.1,80,0.25)
+multispecies<-readPNG("Images/Multispecies.png")
+rasterImage(multispecies,100,0.5,200,0.75)
+```
+
+
+## Inter-colony transmission
+
+```{r include=FALSE}
+nearestNei<-apply((di+diag(nrow(di))*10^10),1,FUN=min)/1000
+mDi<-median(nearestNei)
+rDi<-range(nearestNei)
+
+```
+
+
+We extended the definition of the infected class, to the *effective number* of infected individuals in each colony, by relaxing the assumption of perfect mixing, to account for metapopulation structure and  at-sea distances between colonies. Each individual in the metapopulation could interact with any other individual, but the probability of this happening decayed with the distance of their colonies. We termed the distance-decay function epidemiological *connectivity* between colonies and its parameters were estimated along with the rest of the model. Note that epidemiological connectivity is not the same as dispersal connectivity, such as might be measured via animal telemetry [@Riaz2024; @McDuie2024] or ringing data [@IbanezPorras2024] because it is also shaped by additional behavioural and physical constraints that may affect contact and transfer. We found that the spatial scale of transmission between colonies was limited (Fig. \@ref(fig:SynCon)), the *half-distance of connectivity*  (the distance at which an infected individual from another colony contributes half of itself to the effective number of infecteds in a focal colony, compared to a resident breeder) was estimated by the model as `r round(0.001*c(log(0.5)/(-su_dG[2])))`km compared to the median distance between nearest-neighbour colonies of `r round(mDi)`km (range `r round(rDi[1])`km – `r round(rDi[2])`km).
+
+
+## Extra-network transmission
+
+Carcass counts inform the model about the relative timing of the outbreak for each colony as well as the local epidemic pulse within the colony. Having accounted for these two mechanisms, any residual patterns can be assigned to extra-network incursions into the breeding Gannet population, e.g., from other species, or from non-breeding Gannets that use space differently to breeders. For instance, if another species was experiencing an outbreak at a particular spatial location, and there was spillover to Gannets, we might expect the onset of otherwise unexplained outbreaks in Gannet colonies in the vicinity of this disease hotspot. We may not have explicit data about the other species, but we can infer where these unobserved hotspots might be, based on unexplained patterns of synchrony in the timing of Gannet outbreaks in space.
+
+Consequently, we included a *synchrony* term in our model that used the Gannet colony network as a set of observation points. If the onset of outbreaks in previously unaffected, neighbouring colonies coincided (i.e., was synchronous) in a way that was not already explained by connectivity with affected colonies, then this was attributed to extra-network transmission. The mathematical operation within the SIRD model was similar to a kernel smoothing filter, applied to the disease presence/absence within all colonies in the Gannet network. The distance weightings in this kernel approach, interpreted as the effective range of spatial autocorrelation in extra-network transmission, were estimated by the model simultaneously with all epidemiological and connectivity parameters.
+
+A comparison of spatial scales between transmission processes across the network (Fig. \@ref(fig:SynCon)) indicated that mechanisms of inter-colony transmission (the connectivity weighting) operate at considerably smaller scales (connectivity half-distance of `r round(0.001*log(0.5)/(-su_dG[2]))`km) compared to the extra-network transmission mechanisms (synchrony half distance of `r round(0.001*log(0.5)/(-su_dH[2]))`km). The scale of extra-network transmission was comparatively harder to quantify, as indicated by the broad 95% credible band around the median curve (the green band in Fig. \@ref(fig:SynCon)). Nevertheless, despite the limitations of the carcass data, both curves are sufficiently precise to be of value for prediction and simulation. 
+
+## Reconstructing the epizootic across time
+
+
+```{r InfForce, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, cache=TRUE, fig.cap="a) Prevalence across time indicated by median total number of cases (solid curve) and associated 95% credible intervals (purple band). The estimated proportion of animals in each state (S,I,R,D) on week 43 (at the end of the outbreak), is shown as the inset pie chart. b) The relative strength of incoming infections across all colonies, showing a comparison between intra-network infections, compared to infections due to external sources. Since the peak values of intra-network estimates are very high, a log scale was used on the y-axis.", fig.height=7, paged.print=FALSE}
+gannet<-readPNG("Images/Gannet.png")
+ga <- rasterGrob(gannet, interpolate=TRUE)
+
+multispecies<-readPNG("Images/Multispecies.png")
+ms <- rasterGrob(multispecies, interpolate=TRUE)
+
+
+###
+# Figure 2: PREVALENCE----
+
+# data prep cases
+nms<-rownames(su)
+Tmax<-ncol(Carcass)
+kp<-data.frame(su[str_detect(nms,"Infected"),][3:43,])
+kp$parameter <- "cases"
+kp$week<-3:(Tmax-1)
+kp$Tlab<-dats[3:(Tmax-1)]
+
+# data prep incoming cases 
+# Please double check labeling - does GItot align with Intra and HItot with extra network?
+kp1<-data.frame(su[str_detect(nms,"GItot"),][3:43,])
+kp1$parameter <- "Intra"
+kp1$week <- 3:(Tmax-1)
+kp1$Tlab<-dats[3:(Tmax-1)]
+
+kp2<-data.frame(su[str_detect(nms,"HItot"),][3:43,])
+kp2$parameter <- "Extra"
+kp2$week <- 3:(Tmax-1)
+kp2$Tlab<-dats[3:(Tmax-1)]
+
+# joined dataset
+all_incoming<- rbind(kp1,kp2)
+all_incoming$parameter <- as.factor(all_incoming$parameter)
+
+## Figure 2 prep----
+# start with pie chart as inset
+
+# prepare data
+pop <- data.frame(PopOutcome)
+pop$Status <- c("Infected","Recovered","Dead","Susceptible")
+pop$Status_ab <- abbreviate(pop$Status, minlength = 1)
+
+pop <- pop %>% 
+  arrange(desc(Status_ab)) %>%
+  mutate(prop = PopOutcome / sum(pop$PopOutcome) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+# decide on colour values for the categories here
+#cols <- c("S" = "#26ad81", "I" = "#fde725", "R" = "#77d153", "D" = "#38598c")
+cols <- c("S" = "#fde725", "I" = "#26ad81", "R" = "#38598c", "D" = "#440154")
+
+# Pie chart----
+fig2a_inset2 <- ggplot(pop, aes(x="", y=prop, fill=Status_ab)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() + 
+  theme(legend.position="none") +
+  geom_text(aes(y = ypos, label = Status_ab), color = "white", size=6) +
+  scale_fill_manual(values = cols) 
+
+
+# Figure 2a: Cases with pie chart
+fig2a <- ggplot(data = kp, aes(week)) + geom_line(aes(x=week,y=Median), size=1, colour = "black") +
+  geom_ribbon(aes(ymin=Lower95, ymax=Upper95), alpha = 0.45, fill = "#440154") + theme_bw() +
+  xlab("week") + ylab("Infected") + ggtitle("a. All cases") +
+  theme_classic()+
+  annotation_custom(ga, xmin=3, xmax=10, ymin=18000, ymax=25000) +
+  annotation_custom(ggplotGrob(fig2a_inset2), xmin=20, xmax=45, ymin=10000, ymax=30000)
+
+
+# Figure 2b: Incoming infections----
+all_incoming$parameter <- factor(all_incoming$parameter, labels=c("Extra", "Intra"))
+
+cols1 <- c(Intra = "#3c4f8a", Extra = "#1f948c")
+
+## Option 1 y axis curtailed at 0.1
+fig2b_1 <- ggplot(data = all_incoming, aes(week)) + 
+  geom_ribbon(aes(ymin=Lower95, ymax=Upper95, fill = parameter), alpha = 0.35, show.legend = F) +
+  scale_fill_manual(values = cols1) +
+  geom_line(aes(x=week,y=Median, colour = parameter), size=1, alpha = 1) + 
+  scale_colour_manual(values = cols1, labels=c("Intra" = "Intra-network exchange", "Extra"="Extra-network exchange")) +
+  scale_y_continuous(trans = log_trans(), oob = scales::oob_censor_any, labels = label_math(e^.x, format = log)) +
+  coord_cartesian(ylim = c(1e-1,1e3), expand = TRUE) +
+  xlab("week") + ylab("log(incoming infections)") +
+  ggtitle("b. Cases coming into colonies") +
+  theme_classic() +
+  theme(legend.title=element_blank(), legend.position = "inside",
+      legend.position.inside = c(0.8,0.2)) 
+
+fig2a / fig2b_1
+
+
+```
+
+
+The aggregate number of cases across the metapopulation comprised both endemic cases to each colony as well as imported cases from other colonies and species. The overall number of cases across Europe appears to have peaked in early July 2022 (Fig. \@ref(fig:InfForce)a) at which time we estimate that there were a median `r round(kp[13,2]/100)*100` infected Gannets (95% CI: `r round(kp[13,1]/100)*100` - `r round(kp[13,3]/100)*100`). Importantly, not all colonies were affected to the same extent, and several colonies may not have been infected at all (see example reconstructions of carcass time-series at colony level in Fig. \@ref(fig:SampleTrajectories)). The median fatalities at the end of the outbreak corresponded to  `r round(100*su[str_detect(nms,"EndDed"),2]/sum(PopOutcome))`% of the population (95% CI: `r round(100*su[str_detect(nms,"EndDed"),1]/sum(PopOutcome))` - `r round(100*su[str_detect(nms,"EndDed"),3]/sum(PopOutcome))`%).
+
+Using the spatial structure of our metapopulation model, we were interested in exploring the relative contributions of incoming cases, calculated as coming from within versus outside the Gannet breeding network. We added together the number of cases of each type across colonies to arrive at two time series of incoming cases (Fig. \@ref(fig:InfForce)b). These indicated that incoming cases from other breeding colonies were initially lower than the extra-network cases. Hence, early outbreaks in many colonies were more likely to have been started by infected individuals from other species (extra-network transmission). Although there was considerable uncertainty in quantifying these signals, intra-network transmission took over as the main contributor of imported cases in mid-June 2022 (week 15 of the outbreak).
+
+This finding indicates that other disease vectors may have functioned as conduits for HPAI. These vectors could be other seabird species that breed in spatial proximity or forage in overlapping ranges, but they could also be immature prospecting Gannets [@Votier2011], non-breeding Gannets that move over larger spatial scales than breeders [@Votier2017], failed breeders  [@Votier2017], or Gannets that lost their chick or partner in the outbreak and performed unusual long-distance movements [@Jeglinski2024]. The carcass observations do not distinguish between breeders and non-breeders, so likely consist of breeders and colony visiting non-breeders that died there thus inflating the carcass counts. The intra-network connectivity term of the model captures infection fluxes that are consistent with the colony locations and sizes of the Gannet network. Non-breeders, whether juvenile or floater birds, are likely to move in loose association with the locations and sizes of Gannet colonies. Therefore, their effect is most likely to be captured by the intra-network connectivity term in the model. In contrast, despite some overlap between the breeding distributions of different species, there are considerable differences in the locations and sizes of colonies of the collective seabird community. It is likely that any extra-network incursions captured by the synchrony term would most likely come from other species. Therefore, we suggest that the extra-network curve captured by our model, at the level of the whole European breeding metapopulation, lends support to the idea that HPAI is triggered by multispecies transmission.
+
+The strength and effect of the HPAI outbreak varied across the Gannet colony network (Table 1). The uncertainty evident in the colony-specific credible intervals is considerable. Although some colonies have a 95% quantile mortality range of 10%, several of the larger colonies are characterised by 95% credible interval ranges of up to 80%. This is a direct result of the error-prone nature of the carcass data. However, despite these uncertainties, it is clear that colonies were affected differently with worst-case scenarios for the least affected colonies (i.e., upper 95% CI) of merely 10% mortality, whereas best-case scenarios for the worst affected colonies were never below 40% mortality.
+
+
+```{r PrevMap, echo=FALSE, fig.cap="The reconstructed prevalence of the extra-network distribution of disease as inferred by the synchrony term of the model. Prediction cuttoff distance was determined by setting a small-value cut-off to the aggregate kernel weights. Hence, if a point at sea was so far from all colonies that the sum total of the synchrony function for that point was smaller than 0.0001, no prediction was attempted.", fig.height=8, message=FALSE, warning=FALSE, fig.width=6, cache=TRUE}
+
+
+annotation_custom2 <- 
+  function (grob, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, data){ 
+    layer(data = data, stat = StatIdentity, position = PositionIdentity, 
+          geom = ggplot2:::GeomCustomAnn,
+          inherit.aes = TRUE, params = list(grob = grob, 
+                                            xmin = xmin, xmax = xmax, 
+                                            ymin = ymin, ymax = ymax))}
+
+
+
+## Data prep----
+frameBuf<-1
+minLo<-min(colSummaries$Lon)-frameBuf
+maxLo<-max(colSummaries$Lon)+frameBuf
+minLa<-min(colSummaries$Lat)-frameBuf
+maxLa<-max(colSummaries$Lat)+frameBuf
+
+res<-100
+deltaH<-0.00004
+LoPred<-seq(minLo,maxLo,length.out = res)
+LaPred<-seq(minLa,maxLa,length.out = res)
+
+predCoords<-expand.grid(LoPred,LaPred)
+predSnos<-expand.grid(1:res,1:res)
+
+dlat<-111.4
+df<-data.frame("fi"=c(45,60,75),"Dlon"=c(78,55,28))
+mo<-lm(Dlon~fi, df)
+dlonAl<-mo$coefficients[1]
+dlonBe<-mo$coefficients[2]
+colSummaries<-cbind(colSummaries,"Dlat"=rep(dlat,nrow(colSummaries)))
+colSummaries<-cbind(colSummaries,"Dlon"=dlonAl+dlonBe*colSummaries$Lat)
+
+n<-nrow(colSummaries)
+times<-c(1,10,20,30)
+timestamps<-c()
+for(i in 1:5) {timestamps[i]<-paste("Week ",times[i],"","(",dats[times[i]],")", sep="")}
+#for(i in 1:5) {timestamps[i]<-paste("Week ",times[i], sep="")}
+nms<-rownames(su)
+kp2<-su[str_detect(nms,"uN"),2]
+detectU<-matrix(kp2, nrow=n, ncol=length(timestamps))
+detectU<-round(detectU)
+
+
+# Great Circle Distance function
+GCD<-function(lo1,la1,lo2,la2)
+{
+  lo1<-2*pi*lo1/360
+  la1<-2*pi*la1/360
+  lo2<-2*pi*lo2/360
+  la2<-2*pi*la2/360
+  r<-6371009
+  Dsi<-atan2(
+    sqrt((cos(la2)*sin(abs(lo1-lo2)))^2+(cos(la1)*sin(la2)-sin(la1)*cos(la2)*cos(abs(lo1-lo2)))^2),
+    sin(la1)*sin(la2)+cos(la1)*cos(la2)*cos(abs(lo1-lo2))
+  )
+  d<-r*Dsi
+  return(d)
+}
+
+
+
+for(j in 1:4)
+{
+  predsF<-data.frame("Lon"=predCoords[,1],"Lat"=predCoords[,2],"prev"=NA,"week"=rep(timestamps[j],nrow(predCoords)))
+  for(i in 1:nrow(predCoords))
+  {
+    lo1<-predCoords[i,1]
+    la1<-predCoords[i,2]
+    lo2<-colSummaries$Long
+    la2<-colSummaries$Lat
+    dis<-GCD(lo1,la1,lo2,la2)
+    ws<-sum(exp(-deltaH*dis))
+    access<-ifelse(ws>0.0001,1/ws,NA)
+    predsF[i,3]<-sum(detectU[,j]*exp(-deltaH*dis))*access+runif(1,10^-45,9.999*10^-44)
+    
+  }
+  if(j==1) predsFlat<-predsF
+  if(j>1) predsFlat<-rbind(predsFlat, predsF)
+}
+
+
+brs<-quantile(predsFlat$prev, probs=seq(0,1,0.01), na.rm=TRUE)
+brs<-unique(10^round(log(brs, base=10)))
+brs<-sort(c(seq(0.2,1,0.1),10^(-seq(1,50,5))))
+
+
+# Maps of weekly prevalence----
+
+red_dat <- predsFlat %>% filter(week != "Week 40")
+
+fig3a <- ggplot(predsFlat) +
+  geom_contour_filled(aes(Lon, Lat, z = prev), breaks=brs) +
+  # D = viridis, F = magma
+  scale_fill_viridis_d(option = "D", guide = guide_colorsteps(), 
+                       labels = c("0","","","","","","","","","","","","","","","1")) +
+  geom_sf(data = land, fill = "lightgrey", col ="lightgrey") + 
+  coord_sf(datum = st_crs(4326), ylim = c(minLa, maxLa), xlim = c(minLo, maxLo), expand = FALSE) +
+  xlab("Longitude") + ylab("Latitude") + 
+  annotation_scale(location = "br", height = unit(0.1, "cm"), text_cex = 0.5) +
+  #annotation_north_arrow(which_north = "true", location = "tl", height = unit(0.5, "cm"), width = unit(0.35, "cm"),
+  #                       style = north_arrow_orienteering) +
+  theme_bw() + 
+  facet_wrap(~week, ncol = 1, , strip.position="right") + # can modify ncol for better visibility
+  theme(strip.background = element_rect(colour = "black", fill = alpha("white",0.2) ),
+        strip.text.x = element_text(colour = "black", face = "bold", size=8),
+        legend.position = "right",
+        legend.spacing.x = unit(0, "cm")) + guides(fill = guide_legend(title = "Prob. presence"))
+# add icon
+a1 = annotation_custom2(rasterGrob(multispecies, interpolate=TRUE), xmin=18, xmax=36, ymin=50, ymax=59, data=predsFlat)
+
+fig3a+a1
+```
+
+
+## Spatiotemporal reconstruction of HPAI spread
+
+The additional utility of having separated the contribution of connectivity and synchrony mechanisms is that we can illustrate the spatiotemporal effects of the synchrony mechanism while controlling for the intra-network dynamics of the disease. Of course, as is the case with any point-transect observation system in wildlife [@Buckland2001Introduction] and disease [@Nelli2020b], these insights can only extend up to some effective detection distance from the observation network, determined by the half-distance of synchrony.  We used our fitted model to answer this question, hence generating a reconstruction of the 2022 unfolding of HPAI beyond the Gannet network. This use of the Gannet network as a set of sentinel observation points led to highly interpretable depictions of how the disease may have unfolded across northern Europe during the HPAI outbreak in the Gannet metapopulation. The disease was first detected in Iceland [@Lane2024]. The time sequence of five maps in (Fig. \@ref(fig:PrevMap)) shows that, by week 10 (end of May 2022), the disease was taking hold at two distant locations (north of Scotland and  Iceland). However, the maps also show discernible patterns of spatially aggregated prevalence. From the 10th week onward, the disease invaded the Scandinavian coastline and displayed outbreaks in the southern UK and Northern Iceland. The indication from these findings (Figs \@ref(fig:InfForce)b and \@ref(fig:PrevMap))) is that even though the epizootic was triggered at more than one simultaneous loci, the spread of the disease within the broader multispecies community is nevertheless spatially coherent and predictable (see spatially autocorrelated flux of contagion levels in Fig. \@ref(fig:PrevMap)).
+
+## Implications for conservation
+
+The combination of mass mortalities with the potential detrimental effects of exposure on survivor condition and breeding success [@Careen2024] will have currently unpredictable population viability consequences for different wild birds species, many of which are already subjected to acute anthropogenic pressures [@Kuiken2024; @Runstadler2024]. Our estimates of global and localised mortality can readily be incorporated into population viability analyses, combined with other threats such as climate change [@Jeglinski2024b], and used to evaluate the long-term impacts of HPAI on wild populations (Jeglinski et al., in prep.). 
+
+From a conservation viewpoint, understanding the discrepancy between connectivity due to dispersal and emergent epidemiological connectivity, addresses a key trade-off posed by @Hess1996: Although dispersal between sub-populations is beneficial for metapopulation viability, it comes with the risk of disease spread. Our finding that the range of intra-network disease transmission is limited, provides hope that disease spread may be interrupted by geographic separation between colonies (a form of natural cordon sanitaire), without affecting the function of valuable metapopulation rescue effects through longer-range inter-annual dispersive movements. 
+
+## Implications for pandemic preparedness: One Health approach to surveillance
+
+Avian influenza viruses naturally circulate in wild aquatic birds worldwide [@Olsen2006].However, the recent scale and severity of the outbreak caused by subtype H5N1 clade 2.3.4.4b HPAIV [@Lycett2019] has surpassed previous epizootics. The spread across Europe with subsequent incursion into avian species in the Americas, Africa and the previously unaffected sub-Antarctic and Antarctic led to extensive and ongoing global impact. Traditional seasonal patterns have been replaced by year-round prevalence [@Sacristan2024]. Mutations facilitating viral replication in mammals have been identified [@Lei2024]. The disease has an unusually broad range of wild mammal hosts [@EFSA2024;  @Wille2024; @Puryear2024] including widespread spill-over into dairy cattle throughout North America [@PerezAcle2024]. Human risk is still classed as low because there isn’t yet a mechanism of mammal-to-mammal transmission [@WHO2024; @EFSA2024], however cases have increased to 20-140 annually since 2005 [@PerezAcle2024], varying from asymptomatic to fatal in outcome. Therefore, the unprecedented nature of H5N1 clade 2.3.4.4b HPAIV necessitates an urgent global effort to understand the ongoing epidemiology and implications of AIV in wild hosts. 
+
+Outbreaks in wildlife populations are difficult to mitigate. Interventions such as vaccinations and culls are simply not options for wide-ranging threatened animals breeding in colonies of several tens of thousands of individuals. Instead, we are restricted to indirect interventions (e.g., carcass removal to prevent spread through scavenging [@NatureScot2023]) and responsive livestock lockdowns. These interventions either happen in a spatially comprehensive (and extremely costly) form, or, when selectively applied, they are often too-little, too-late. It is therefore both a pressing and challenging problem in wildlife epidemiology to develop surveillance networks, informing methods of accurate and preventative spatial prediction based on intermittent, partial and heavily error-prone data. Routine and responsive monitoring and reporting of die-offs of wild birds from HPAI in most countries are currently underfunded with limited cross-border coordination [@Kuiken2024]. Hence, fortifying monitoring networks is recognized as a top priority [@Chettri2024; @Runstadler2024]. Here, we have demonstrated how opportunistic observations collected by in-situ observers can be organised into a synthetic framework. 
+
+Given the opportunistic and error-prone nature of our carcass data, our investigation relied on breadth rather than depth, but ideally, both should be pursued as and when possible. For instance, extensive and important information can be extracted from the systematic (weekly) counting and removal of carcasses at small scales [@Haman2024]. Although such high levels of effort cannot be expected across the range of species affected, the value of highly detailed observation posts within wildlife networks, in combination with the methodology presented here make the case for complementary monitoring across breadth and localised depth. Maximising how different types of data (e.g., drone counts) can be used to amplify the impact of increased surveillance efforts is now key to monitoring future risk of a virus of conservation importance, economic cost and pandemic potential.
+
+## Conclusion
+
+Our epidemiological parameter estimates suggest that the 2022 strains of HPAI were highly virulent and transmissible over wide geographical ranges, within the Gannet network, and beyond. On this evidence, the disease is probably self-sustainable despite the large inter-colony distances. There is also clear evidence that a background latent process of, most probably, multispecies infection played an important role, especially at the start of the Gannet epizootic. In this study, we did not employ covariates that would distinguish between the local colony characteristics (such as topography). Hence, the inferred extreme heterogeneity in the final outcomes between different colonies is probably the result of inter-colony distances and the latent heterogeneities in the background processes of contagion (such as might result from regional variation in the composition of local seabird communities). 
+
+The adaptability and multispecies incursions of the H5N1 virus demand a rapid and cooperative OneHealth response by scientists working on human health, food security and ecosystem health [@PerezAcle2024]. Early warning surveillance systems based on global observation data sets are crucial for this task [@Runstadler2024]. However, mapping the details of disease spatial spread may not be possible directly from raw data. Approaches such as ours, combining computer-intensive statistical modelling, with epidemiological principles will be required to interpolate and predict disease prevalence across difficult to observe species and domains. 
+
+International organisations recognize surveillance as a top One Health priority [@EFSA2024; @WHO2024]. Producing such large-scale maps of disease prevalence has so far proven challenging and mostly based on qualitative arguments [@Olsen2006]. For as long as observation effort on disease occurrence is heterogeneous and unknown, straightforward statistical approaches such as habitat suitability modelling [@Dupas2024] will remain weak predictive tools for anticipating outbreaks. Our study demonstrates that if analysed holistically, carcass data can provide epidemiological insights but also to act as an early warning system for continent-wide patterns of spread. For pandemic preparedness, it is essential that data-integrative approaches such as ours are placed in the mainstream toolbox of planetary health monitoring.
+
+
+
+# METHOD DETAILS
+
+## Data collection
+
+### Colony network
+
+The Northeast Atlantic Gannet colony network, including its colonization history and expansion in the 20th century has been described in detail in @Jeglinski2023. The geographic colony locations of all 46 colonies extant in 2022 form the colony network for our analyses here. Because of their very close spatial proximity, we combined the Icelandic colonies of the Vestmannaeyjar (Brandur, Geldungur, Hellisey and Sulnasker) for the further analyses into one Westman Islands colony complex.
+Gannets rarely travel overland [@Furness2018], hence biologically realistic connectivity between colonies is best based on across-the-sea rather than Euclidean distances. Based on a high-resolution global land shapefile sourced from Natural Earth (https://www.naturalearthdata.com/downloads/10m-physical-vectors/) we used the transition function in the R package `gdistance` [@Etten2017] to generate a conductance layer (high conductance through sea cells, no conductance through land cells) for the calculation of the nearest across-the-sea distance matrix between colonies (function `costDistance`).
+
+
+### Carcass data
+The carcass data compilation is described in detail in @Lane2024. Briefly, we contacted fieldworkers, reserve wardens and relevant authorities in all countries spanning the Gannet colony network. For the German, French, one Norwegian and some UK colonies, direct observational data on carcass numbers or their absence were available. For colonies in Iceland, Norway and Ireland, we derived sightings of dead Gannets from the Norwegian Species observation system (https://www.artsobservasjoner.no/ ), from the Icelandic Food and Veterinary Authority, and from the Department of Agriculture, Food and the Marine’s (DAFM) Avian Check App ( https://aviancheck.apps.services.agriculture.gov.ie/). We associated carcass sightings with the nearest Gannet colonies if dead birds were sighted within 50 km of the colony. We summarized the resulting data set to weekly carcass numbers for each colony in the Gannet colony network [See map in @Lane2024]. We set carcass numbers in the weeks before the first date of outbreak or for Bjørnøya, the only colony without outbreak [@Lane2024] to 0, and carcass numbers for subsequent weeks and colonies without information to `NA`.
+
+To aid with speed of model convergence, we assumed that earlier weeks were disease-free. We therefore treated these data as follows: For colonies with any observation effort, we assumed that the disease was not present five weeks before the first case was detected. Therefore, even if there was no effort specifically on these early weeks we set the observed number of carcasses to zero. Since field workers were present during these weeks at some of these colonies and recorded no unusual mortality, this approach seems justified. All weeks other than those (i.e. the five weeks before any detection, and any other weeks with no effort) were given an `NA` value. Colonies that were never observed were given `NA` values across the time of the outbreak. The model was driven by the numeric values in the data and was asked to stochastically reconstruct the missing (`NA`) values.
+
+### Final mortality and exposure estimates
+Adult Gannet survival estimates from Cormack Jolly Seber capture mark recapture models suggest a drop in mean annual survival from 0.941 during 2010-2021 to 0.642 during 2022-2023 at Bass Rock and 0.879 during 2010-2021 to 0.564 during 2022-2023 at Grassholm (Lane et al. unpublished). These estimates were used as data in the model under a joint likelihood approach, combined with the carcass data. 
+
+### Black eye recovery diagnostic
+Indirect evidence of recovery rates can be provided from the finding that some of the surviving birds have black eyes, instead of the usual blue colour [@Lane2024]. This diagnostic, collected for a sample of birds (n=87, n=8) existed for the colonies of Bass Rock and Grassholm. We used this information as a contributor to the joint likelihood of the integrated metapopulation model. 
+
+### Initial susceptible population sizes
+
+Gannet colony sizes were provided from the mechanistic Bayesian metapopulation model of the Northeast Atlantic Gannet metapopulation [@Jeglinski2023]. We used the posterior median colony size estimates from that model, expressed as apparently occupied sites (AOS).
+
+## Model development
+The model unfolds in discrete time, over 44 weeks, starting 5 weeks before the first case was detected in the Northeast Atlantic Gannet metapopulation on the 15th April 2022. For the $i^{th}$ out of $n=43$ colonies our state variables refer to the total population size ($P_{i,t}$), and the numbers of susceptible ($S_{i,t}$), infected ($I_{i,t}$), recovered ($R_{i,t}$) and deceased ($D_{i,t}$)  individuals in any given week $t$. We begin by formulating within-colony epidemiological dynamics and then extend the model to account for network interactions.
+
+### The transmission process within a colony
+
+For a closed colony a local outbreak may be modelled by a generalised version of the law of mass action [@Heesterbeek2005], in which the transmission rate is written in terms of the proportions of infected ($\hat{I}_{i,t}=\frac{I_{i,t}}{P_{i,t}}, \hat{S}_{i,t}=\frac{S_{i,t}}{P_{i,t}}$) and susceptible individuals
+
+\begin{equation}
+(\#eq:transmission1)
+\lambda_{i,t}=c_0 \hat{I}_{i,t} \hat{S}_{i,t}^{c_1}
+\end{equation}
+
+where $c_0$ is the transmission rate and $c_1$ accounts for possible nonlinear responses to the thinning of susceptibles, for example, arising from spatial heterogeneities in the distribution of birds [@Wilson1945]. Values $c_1>1$ will yield concave shapes to the transmission, slowing it down disproportionately, as the outbreak progresses. In a deterministic version of the model, the weekly change in the number of cases is the difference between new infections and the loss due to either recovery ($r$) or death ($m$). For the outbreaks to take off within a single colony it is necessary that this quantity is positive, at the start of the outbreak
+
+\begin{equation}
+c_0 \hat{I}_{i,0} \hat{S}_{i,0}^{c_1}-\hat{I}_{i,0}mr>0
+\end{equation}
+
+Which, for the start of the outbreak when $\hat{S}_{i,0} \approx 1$ implies
+
+\begin{equation}
+R_0 = \frac{c_0}{mr} >1
+\end{equation}
+
+Here, the ratio $R_0$ is the basic reproduction number of the disease. Given that the disease patently took off in many colonies of Gannets, we assumed that the above condition held. On that basis, we set the following scaled and joint priors for the three parameters above
+
+\begin{align}
+m &= 0.3+0.7m' \ \ \ \ \ \ \ \ m' \sim Beta(10,10) \\
+r &= 0.1+0.8r' \ \ \ \ \ \ \ \ \ \ r' \sim Beta(10,10) \\
+c_0 &= mr(1+c_0') \ \ \ \ \ \ \ \ \ \ c_0' \sim \Gamma(5,5)
+\end{align}
+
+The new number of infections each week was modelled as a gamma-Poisson process (effectively, a negative binomial) with overdispersion parameter $\theta$
+
+\begin{align}
+(\#eq:contOD)
+h_{od} &\sim \Gamma(\theta,\theta) \\
+C_{i,t} &\sim Poisson(h_{od} P_{i,t} \lambda_{i,t})
+\end{align}
+
+Large values of the parameter $\theta$ correspond to reduced dispersion, such that the process tends to a simple Poisson. To ensure that the model was parsimonious with regard to overdispersion (i.e., that it minimized the stochastic variation it used to explain the data) we specified a shrinkage prior for $\theta$:
+
+\begin{align}
+\theta' \sim Beta(1,100) \\
+\theta = 5+100(1-\theta')
+\end{align}
+
+We generalize the above model to the metapopulation, by introducing the *effective number of infections* for each colony. This comprises two external contributions, in addition to endemic cases. The first external contribution comes from other Gannet colonies according to some distance-based *connectivity* matrix $g$ between colonies. Metapopulation models for disease may follow classical approaches [@Levins1969], taking an implicitly spatial approach [@Hess1996], or they may follow more spatially informed approaches, along the lines of the incidence function [@Hanski1997] where epidemiological connectivity and synchrony between sub-populations are explicitly considered in terms of spatial locations [@Xia2004a]. Here, we follow this latter approach in formulating the connectivity matrix.
+
+\begin{equation}
+\mathbf{g} =\{ g_{j,i}, n \times n  \}
+\end{equation}
+
+Note that this is not a dispersal process between colonies, since breeding Gannets are highly faithful to their breeding colony and nest site. Instead, it represents some other form of transmission between Gannets at different colonies for example:
+
+* Transmission between Gannets from different colonies at sea, during foraging,
+* Transmission mediated by non-breeding Gannets that nevertheless associate with colonies enough to contract the disease and die where they can be counted among the colony carcasses,
+* Notably, the model operates on AOS (apparently occupied sites) as units of colony sizes, which are an approximation of breeding pairs. So, inter-colony transmission may occur by single individuals that have lost their partner, and therefore, even if themselves alive, are considered lost to the breeding population due to the overall process of mortality.
+
+In general, $g(d_{i,j}): \mathbb{R}_0^+\rightarrow[0,1]$ can be any monotonically decreasing function of the distance between colonies. Here, we used an exponential decay.
+
+\begin{equation}
+(\#eq:gij)
+g_{j,i}=g(d_{i,j})=exp(-\delta_G d_{ij})
+\end{equation}
+
+The effective number of infections arriving at the $i^{th}$ colony is therefore .
+
+\begin{equation}
+G_{i,t}=\sum_{j=1}^n I_{j,t} g(d_{i,j})
+\end{equation}
+
+The transmission equation \@ref(eq:transmission1) then becomes (for $\hat{G}_{i,t}=\frac{G_{i,t}}{P_{i,t}}$)
+
+\begin{equation}
+(\#eq:transmission2)
+\lambda_{i,t}=c_0 \hat{G}_{i,t} \hat{S}_{i,t}^{c_1}
+\end{equation}
+
+This model has two distinct advantages:
+
+1) It captures the within-colony transmission. The model falls back to the single colony dynamics for $n=1, d_{j,j}=0$.
+
+2) The interaction between different colonies via the effective number of infected individuals allows us to think about the process as a case of perfect mixing between local susceptible individuals ($S_i$) and a distance-discounted number of infected individuals from across the entire metapopulation.
+
+The second mechanism connecting the colonies in the network is the *synchrony* term, denoted $H_{i,t}$, which uses coincidences in the timing of outbreak initiation in different colonies to detect and locate external incursions of disease into the network. This follows a similar mathematical form to the connectivity term but with two key differences: First, it operates on the presence/absence ($U_{j,t}$) of the disease in other colonies (not the number of infected) and, second, it is normalised across all the colonies. These two features allow the synchrony term to operate as a kernel smoother yielding the probability that any given colony (or, more generally, any point in space, see output in Fig. \@ref(fig:PrevMap)) is exposed to the disease, by using the full network of colonies as observation stations. 
+
+\begin{align}
+(\#eq:synchrony)
+h_{j,i}=h(d_{i,j})=exp(-\delta_H d_{ij}) \\
+H_{i,t}=\frac{\sum_{j=1}^n U_{j,t} h(d_{i,j})}{\sum_{j=1}^n h(d_{i,j})}
+\end{align}
+
+In keeping with the rest of the model, the synchrony term needs to contribute to the effective number of infected in a colony, however, it is not clear what the strength of this extra-network forcing is for the initiation and sustaining of the disease locally in each colony, so it was necessary to introduce an additional parameter ($a_H$) to quantify that. The transmission equation \@ref(eq:transmission2) then becomes:
+
+\begin{equation}
+(\#eq:transmission3)
+\lambda_{i,t}=c_0 \frac {G_{i,t}+a_H H_{i,t}}{P_{i,t}} \hat{S}_{i,t}^{c_1}
+\end{equation}
+
+### The metapopulation state-space model
+Stochasticity can operate at any stage of the SIRD model (mortality, recovery, contagion) but it is likely to be more influential when the number of infected is small. Arguably, stochastic events are therefore more important in igniting a colony outbreak, and less so when there are hundreds of cases. Therefore to improve running speed we set out all the update equations of the model to a deterministic form and only used an overdispersed contagion term (refer to eqs \@ref(eq:contOD) & \@ref(eq:transmission3)) to capture much of the otherwise unmodelled stochasticity. The update equations were as follows:
+
+\begin{align}
+S_{j,t+1}=&(1-m)(S_{j,t}-C_{j,t})\\
+I_{j,t+1}=&(1-M)(I_{j,t}(1-\rho)+C_{j,t})\\
+R_{j,t+1}=&(1-m)(R_{j,t}+\rho I_{j,t})\\
+D_{j,t+1}=&m(R_{j,t}+\rho I_{j,t}+S_{j,t}-C_{j,t})+M(I_{j,t}(1-\rho)+C_{j,t})\\
+C_{i,t} &\sim Poisson(h_{od} c_0 (G_{i,t}+a_H H_{i,t}) \hat{S}_{i,t}^{c_1})
+\end{align}
+
+where, $m$ and $M$ are, respectively, the background and avian flu mortalities, $\rho$ is the weekly rate of recovery of infected individuals and $C_{j,t}$ is the number of new contagions. The equations shown above are a simplified version akin to a continuous time model. The JAGS code provided in the Supplements better illustrates the detailed bookkeeping that was required to account for the model's discrete, weekly time scale. In the JAGS code the rate of recovery was calculated after the application of weekly mortality, so the results on this parameter refer to the recovery of survivors. We set the probability of background (non HPAI), weekly mortality to 0.1%, based on the order of magnitude implied by published estimates of annual survival [@Wanless2006].
+
+## The observation model
+
+The observation model for carcass counts was expressed as a normal approximation of a binomial process. Specifically,
+
+\begin{equation}
+C_{j,t} \sim N(D_{j,t} \epsilon_{i,t}\phi, \sigma_{i,t})
+\end{equation}
+
+Where $\epsilon_{j,t} \in \{0,1\}$ is an indicator variable taking the value 1 when observation effort was expended on colony $i$ in week $t$, and $\phi$ is the proportion of carcasses that are detected (assumed constant, conditional on effort being 1). To approximate a Binomial detection process with probability $\epsilon_{i,t}\phi$, the standard deviation was set to $\sigma_{i,j}=D_{j,t} \epsilon_{i,t}\phi(1-\epsilon_{i,t}\phi)$.
+
+For the two colonies (Bass and Grassholm) where we had final outcomes (proportions recovered and likely proportions dead), we formulated a subsidiary part of the likelihood, as binomial distributions where the overall probability of having died or having contacted and recovered from the infection was informed by the model's current estimate of overall outcomes (See table 1 for examples). Inference was performed on the integrated data set simultaneously for process and observation parameters.
+
+### Model fitting
+The above model was implemented in the symbolic language JAGS [@Plummer2003] and run within the R environment [@RCoreTeam2021]. JAGS is a stable implementation of Monte Carlo Markov Chain, and particularly the Gibbs algorithm. The model was adapted for 500 iterations, burnt-in for 15000 iterations and 5000 iterations were retained post-burn-in. Four chains were run in parallel to evaluate mixing and convergence. This process took 30 days on a multicore AMD 2.9 Ghz Ryzen Threadripper.
+
+## Acknowledgements 
+This work was funded by a NERC Urgency Grant NE/X013502/1 to SV. Adult survival work was funded by the Forth and Tay Offshore Wind Farm Developers; Neart na Gaoithe
+Offshore Wind Ltd, Seagreen Wind Energy Ltd and SSE Renewables. Dan Haydon provided valuable feedback on earlier manuscripts. 
+
+## Author contributions. 
+JM developed the model, carried out statistical analysis and wrote the first draft of the MS. JJ collated the carcass data and helped with the figures. JJ, JL and SV collected the (carcass, black eye, and final mortality) data pertaining to Bass rock and Grassholm. All authors commented critically during model development and contributed to the writing of the submitted version. 
+
+## Competing interests. 
+The authors declare no competing interests.
+
+\pagebreak
+
+# Supplements
+
+## JAGS code for model
+
+```{r JAGSCode , eval=FALSE}
+###### Model statement ######
+AIModDet<-  "model{
+  # Initialisation of states
+  for(i in 1:n)
+  {
+    P[i,1]<-P0[i]
+    S[i,1]<-P0[i]-I[i,1]
+    I[i,1]~dpois(a0)
+    R[i,1]<-0
+    D[i,1]<-0
+    U[i,1]<-0
+  }
+  # Connectivity matrices
+  for (i in 1:n)
+  {
+    for (j in 1:n)
+    {
+      g[i,j]<-exp(-(deltaG*di[i,j]))
+      h[i,j]<-exp(-(deltaH*di[i,j]))
+    }
+    
+    H[i]<-sum(h[1:n,i]) #Colsums for synchrony
+  }
+  ### MAIN LOOP ###
+  for(t in 1:(Tmax-1))
+  {
+    fG[1:n,t]<- (t(I[1:n,t])%*%g[1:n,1:n])
+    fH[1:n,t]<- (t(U[1:n,t])%*%h[1:n,1:n])
+    cumSt[t]<-t-min(3,t-1)
+    for(i in 1:n) #destination
+    {
+      Ief[i,t]<- (fG[i,t]+aH*fH[i,t]/H[i])/P[i,t] # Contacts with infected indis
+      GIef[i,t]<-fG[i,t]-I[i,t]
+      HIef[i,t]<-aH*fH[i,t]/H[i]
+      hod[i,t]~dgamma(theta,theta)
+      contagionsD[i,t]~dpois(hod[i,t]*(P[i,t]*c0*Ief[i,t]*(S[i,t]/P[i,t])^c1))
+      contagions[i,t]<-min(S[i,t], contagionsD[i,t]) 
+      
+      deathsAI[i,t]<-aiM*I[i,t]
+
+      recoveries[i,t]<-rrr*I[i,t]*(1-aiM)
+      
+      Sr[i,t]<-max(0, S[i,t]-contagions[i,t]) 
+      deathsNAS[i,t]<-naM*Sr[i,t]
+      deathsNAR[i,t]<-naM*R[i,t]
+      R[i,t+1]<-max(0,R[i,t]+recoveries[i,t]-deathsNAR[i,t])
+      I[i,t+1]<-max(0, I[i,t]+contagions[i,t]-deathsAI[i,t]-recoveries[i,t])
+      S[i,t+1]<-max(0,S[i,t]-contagions[i,t]-deathsNAS[i,t])
+      U[i,t+1]<-min(I[i,t+1],1) # Is disease present in the colony?
+      
+      deaths[i,t]<-deathsAI[i,t]+deathsNAS[i,t]+deathsNAR[i,t]
+      D[i,t+1]<-D[i,t]+deaths[i,t]
+      P[i,t+1]<-I[i,t]+S[i,t]+R[i,t]
+
+      cumDeaths[i,t]<-sum(deaths[i,cumSt[t]:t])
+      Carcass[i,t]~dnorm(cumDeaths[i,t]*esc,1/(cumDeaths[i,t]*esc*(1-esc)+0.001))
+      Carcass2[i,t]~dnorm(cumDeaths[i,t]*esc,1/(cumDeaths[i,t]*esc*(1-esc)+0.001))
+    }
+    Infected[t]<-sum(I[1:n,t])
+    GItot[t]<-sum(GIef[1:n,t])
+    HItot[t]<-sum(HIef[1:n,t])
+  }
+  EndInfc<-sum(I[1:n,Tmax])
+  EndRecv<-sum(R[1:n,Tmax])
+  EndDed<-sum(D[1:n,Tmax])
+  EndSsc<-sum(S[1:n,Tmax])
+  
+  for(i in 1:n) #destination
+  {
+  NInfc[i]<-I[i,Tmax]
+  NRecv[i]<-R[i,Tmax]
+  NDed[i]<-D[i,Tmax]
+  NSsc[i]<-S[i,Tmax]
+  }
+  
+  for(ts in 1:5)
+  {
+    uN[1:n,ts]<-U[1:n,timestamps[ts]]
+  }
+
+  for(i in 1:nMort) # Final deaths - based on empty nests 
+  {
+    muM[i]<-min(0.9999,max(0.0001,D[morts[i],Tmax]/P0[morts[i]]))
+    obsMort[i]~dbinom(muM[i],testMort[i])
+  }
+  
+  for(i in 1:nRec) # Final recoveries - based on black-eye inspection
+  {
+    muR[i]<-min(0.9999,max(0.0001,R[recs[i],Tmax]/(R[recs[i],Tmax]+S[recs[i],Tmax])))
+    obsRec[i]~dbinom(muR[i],testRec[i])
+  }
+  
+ ### Priors ###
+  # Connectivity
+  deltaHd~dnorm(-11,1)
+  deltaH<-exp(deltaHd)
+  
+  deltaGd~dnorm(-11,1)
+  deltaG<-exp(deltaGd)
+
+  # Epidemiology
+  thetaDum~dbeta(1,100)
+  theta<-5+100*(1-thetaDum)
+  a0~dgamma(1,10)
+  # c0d~dbeta(tig,tig)
+  # c0<-0.00001+c0d
+  c0cap~dgamma(5,5)
+  c0<-(1+c0cap)*rrr*aiM
+
+  aH~dgamma(0.1,0.1)
+  c1~dgamma(100,100)
+
+  tig<-10 
+  rd~dbeta(tig,tig)
+  rrr<-0.1+0.8*rd
+  aiMd~dbeta(tig,tig)
+  aiM<-0.3+0.7*aiMd
+  naM<-0.0001
+
+  # Detectability
+  escd~dbeta(1,10) # Detectability prior
+  esc<-0.3*escd # Detectability upper limit of 30%
+
+  #data# Tmax,n,P0, Carcass, di , obsMort, obsRec, nMort, nRec, morts
+  #data# recs, testMort,testRec, timestamps
+  #monitor#  c0,c1,deltaG,aH,deltaH,aiM,rrr,esc,theta, muM,muR, 
+  #monitor#  Carcass2, Infected, deaths, uN, EndInfc, EndRecv, EndDed
+  #monitor#  EndSsc, NInfc, NRecv, NDed, NSsc,GItot, HItot
+  #inits# aiMd
+  #
+}"
+```
+
+
+## Fitted trajectories
+
+
+```{r SampleTrajectories, echo=FALSE, fig.cap="Goodness-of-fit of the model for a sample of 8 out of the 43 colonies. The grey dots are counts of dead Gannets made at different times during the epizootic. These are incomplete because observation effort was intermittent. They are also unnavoidably inaccurate since only a portion of the deaths are observed and many carcasses are double-counted over time because they remain visible while they decompose. The solid lines show the model's reconstruction of the carcasses that would be expected to be seen on any given week and the salmon bands show the 95% credible intervals in those estimates.", fig.width=6, fig.height=8, cache=TRUE}
+
+
+  par(mfrow=c(4,2))
+  nms<-rownames(su)
+  exemplars<-c(3,9,10,15,16,18,21,23)
+  for(k in 1:length(exemplars))
+  {
+    i<-exemplars[k]
+    kp<-su[str_detect(nms,paste("Carcass2\\[",i,",",sep="")),]
+    T<-1:(Tmax-1)
+    plot(T,kp[,2], type="l", ylim=c(0,max(kp[,3],na.omit(Carcass[i,]))), xlab="Time", ylab="Carcasses",main=colSummaries[i,2])
+    polygon(c(T,rev(T)),c(kp[,1],rev(kp[,3])), border=NA, col="salmon")
+    lines(T,kp[,2])
+    lines(T,Carcass[i,T], lty=1, col="grey", lwd=2)
+    points(T,Carcass[i,T], col="grey", lwd=2)
+    kp<-su[str_detect(nms,paste("deaths\\[",i,",",sep="")),]
+
+  }
+
+
+
+  par(mfrow=c(1,1))
+
+
+```
+
+
+In (Fig. \@ref(fig:SampleTrajectories)) we present a selection of trajectories fitted to the available carcass data. Since the data offer a distorted view of the underlying (unobserved) cases in the population, the reconstructed trajectories shown here are not cases, but, rather, the number of carcasses that an observer should expect to count if they had visited that colony at that point in time. This index also includes the model's estimate of detectability of carcasses and the fact that dead birds may remain available for detection for up to 4 weeks, on average.We see that despite the good performance of the model (most observations lie within the model's 95% credible intervals), there is nevertheless a difficulty in capturing the higher observed values, in the sense that the model's predicted median count (shown as the solid black lines in (Fig. \@ref(fig:SampleTrajectories))) are always below the peak carcass observations. The model performs much better with regards to the reconstructed duration of the pulses in the data.
+
+
+
+
+## Individual colony outcomes
+
+
+```{r colOuts, echo=FALSE, cache=TRUE}
+
+nms<-rownames(su)
+deaths<-su[str_detect(nms,"NDed"),c(2,1,3)]
+recoveries<-su[str_detect(nms,"NRecv"),c(2,1,3)]
+P0<-as.numeric(round(read.csv("Data/Gannet_posterior_colony_sizes.csv", header=FALSE)))
+
+finalOutcomes<-data.frame("Colony"=colSummaries[,2], "Size"=P0,
+                          "Mortality"=round(deaths[,1]/P0*100),
+                          "Mort95CI"=paste("(",round(deaths[,2]/P0*100),"-",round(deaths[,3]/P0*100),")", sep=""),
+                          "Recoveries"=round(recoveries[,1]/P0*100),
+                          "Recov95CI"=paste("(",round(recoveries[,2]/P0*100),"-",round(recoveries[,3]/P0*100),")", sep="")
+                          )
+
+
+
+
+knitr::kable(finalOutcomes,caption = "Reconstructed final epidemiological outcomes, by colony.", row.names=FALSE, col.names=c("Colony","Size","% Med. Mort.", "95% CI","% Med. Recov.", "95% CI"), booktabs=TRUE,longtable = TRUE)%>%
+  kable_styling(latex_options = c("hold_position", "repeat_header"))
+
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# File for Jana
+mortss<-data.frame("Colony"=colSummaries[,2], "Size"=P0,"Mortality"=round(deaths[,1]/P0*100), "Mort95CILow"=round(deaths[,2]/P0*100),"Mort95CIHi"=round(deaths[,3]/P0*100))
+save(mortss, file="Output/FinalMortalities.rda")
+```
+
+
+
+## Prior-posterior plots
+
+In (Fig. \@ref(fig:PriorPost)) we present the marginal prior and posterior plots for 8 key parameters of the model. These are not as useful for interpreting the epidemiology of HPAI, as they are for evaluating which aspects of the process appear to be informed by the available data. With the exception of the transmission mixing parameter (panel b) all the other parameters present more informative posteriors than the originally provided priors.
+
+
+```{r PriorPost, echo=FALSE, fig.cap="Prior (black curves) and posterior (brown histograms) distributions for the nine key model parameters. ", message=FALSE, warning=FALSE, cache=TRUE}
+
+par(mfrow=c(3,3))
+# Baseline transmission
+#Prior
+da<-0.05
+loa<-0
+hia<-2.5
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+
+tig<-10
+rrr<-0.1+0.8*rbeta(50000,tig,tig)
+c0<-pmin(hia-da/2,(1+rgamma(50000,5,5))*rrr)
+fd<-hist(c0, breaks=am, plot=FALSE)
+plot(fd$mids,fd$count/50000,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.1), ylab="", xlab="c0", type="l", main="a. Baseline Transm.")
+# Posterior
+b0D<-cd$c0
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# Transmission mixing parameter
+#Prior
+da<-0.02
+loa<-0
+hia<-2
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,100,100)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, ylim=c(0,max(fd)), ylab="",
+     xlab="c1", type="l", main="b. Transm. mixing")
+# Posterior
+b0D<-cd$c1
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# Synchrony decay in transmission
+#Prior
+da<-0.0000005
+loa<-0
+hia<-0.00008
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+
+delH<-exp(rnorm(100000,-11,1))
+delH<-delH[delH<(hia-da/2)]
+delH<-delH[delH>(loa+da/2)]
+fd<-hist(delH, breaks=am, plot=FALSE)
+plot(fd$mids,fd$count/length(delH),lwd=2,lty=1, xlim=c(loa,hia-da/2), ylim=c(0,1.5*max(fd$count/length(delH))), ylab="Prob density",
+     xlab="Delta H", type="l", main="c. Synchrony Decay")
+# Posterior
+b0D<-cd$deltaH
+b0D<-b0D[b0D<(hia-da/2)]
+b0D<-b0D[b0D>(loa+da/2)]
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# Connectivity decay in transmission
+#Prior
+da<-0.0000005
+loa<-0
+hia<-0.00008
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+
+delG<-exp(rnorm(100000,-11,1))
+delG<-delG[delG<(hia-da/2)]
+delG<-delG[delG>(loa+da/2)]
+fd<-hist(delG, breaks=am, plot=FALSE)
+plot(fd$mids,fd$count/length(delH),lwd=2,lty=1, xlim=c(loa,hia-da/2), ylim=c(0,2.5*max(fd$count/length(delG))), ylab="Prob density",
+     xlab="Delta G", type="l", main="d. Connect. Decay")
+# Posterior
+b0D<-cd$deltaG
+b0D<-b0D[b0D<(hia-da/2)]
+b0D<-b0D[b0D>(loa+da/2)]
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# Synchrony coefficient
+#Prior
+da<-1
+loa<-0
+hia<-50
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.1,0.1)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.1), ylab="",
+     xlab="aH", type="l", main="e. Synchrony coef.")
+# Posterior
+b0D<-cd$aH
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# # Gravity coefficient
+# #Prior
+# da<-0.002
+# loa<-0
+# hia<-.4
+# a<-seq(loa,hia,da)
+# am<-seq(loa+da/2,hia-da/2,da)
+# fd<-dgamma(am,0.1,0.1)
+# fd<-fd/sum(fd)
+# plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.2), ylab="",
+#      xlab="aG", type="l", main="f. Connectivity coef.")
+# # Posterior
+# b0D<-cd$aG
+# f<-as.numeric(table(cut(b0D,a)))
+# lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# AI mortality
+#Prior
+da<-0.03
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,10,10)
+fd<-fd/sum(fd)
+plot(0.3+0.7*am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.3), ylab="",
+     xlab="aiM", type="l", main="g. HPAI mortality")
+# Posterior
+b0D<-cd$aiM
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# Recovery rate
+#Prior
+da<-0.03
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,10,10)
+fd<-fd/sum(fd)
+plot(0.1+0.8*am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.3), ylab="",
+     xlab="rrr", type="l", main="h. Recovery rate")
+# Posterior
+b0D<-cd$rrr
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+# Observation efficiency
+#Prior
+da<-0.01
+loa<-0
+hia<-0.3
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,1,100)
+fd<-fd/sum(fd)
+plot(0.3*am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.5), ylab="",
+     xlab="esc", type="l", main="i. Observation efficiency")
+# Posterior
+b0D<-cd$esc
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="bisque3", lwd=2)
+
+par(mfrow=c(1,1))
+
+```
+
+# References
